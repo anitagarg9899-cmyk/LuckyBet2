@@ -683,11 +683,12 @@ async def rankroles_cmd(ctx):
 
 # ── Core Commands ─────────────────────────────────────────────────────────────
 
-@bot.command(name='balance', aliases=['bal'])
-async def balance(ctx):
-    bal = get_user_balance(ctx.author.id)
-    img_buf = balance_card(ctx.author.name, ctx.author.id, bal)
-    embed = discord.Embed(title=f"ℹ️  {ctx.author.name}'s Balance",
+@bot.command(name='balance', aliases=['bal', 'b'])
+async def balance(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    bal = get_user_balance(target.id)
+    img_buf = balance_card(target.name, target.id, bal)
+    embed = discord.Embed(title=f"ℹ️  {target.name}'s Balance",
                           description=f"{bal:,} points  |  R${bal:,}  |  ${bal * POINTS_TO_USD:.2f}",
                           color=0x4FC3F7)
     embed.set_image(url="attachment://balance.png")
@@ -1229,12 +1230,12 @@ async def thread_close(ctx):
         await ctx.send("❌ This command can only be used inside a thread!")
         return
     try:
-        await ctx.send("🔒 Thread closed.")
-        await ctx.channel.edit(archived=True, locked=True)
+        await ctx.send("🗑️ Deleting thread...")
+        await ctx.channel.delete()
     except discord.Forbidden:
-        await ctx.send("❌ I don't have permission to close this thread!")
+        await ctx.send("❌ I don't have permission to delete this thread!")
     except Exception as e:
-        await ctx.send(f"❌ Could not close thread: {e}")
+        await ctx.send(f"❌ Could not delete thread: {e}")
 
 @thread_cmd.command(name='add')
 async def thread_add(ctx, member: discord.Member = None):
