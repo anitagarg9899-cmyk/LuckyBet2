@@ -1177,11 +1177,13 @@ async def price(ctx, amount: int = None):
     if amount is not None:
         if amount <= 0: await ctx.send("❌ Amount must be positive!"); return
         usd = amount * POINTS_TO_USD
-        embed = discord.Embed(title="💱 Price Conversion", color=0x00BFFF)
-        embed.add_field(name="Points",        value=f"**{amount:,}**",      inline=True)
-        embed.add_field(name="Brazilian Real", value=f"**R${amount:,}**",   inline=True)
-        embed.add_field(name="USD",           value=f"**${usd:.2f}**",       inline=True)
-        embed.set_footer(text="Rate: 1 point = R$1.00 = $0.0037 USD")
+        description = (
+            f"Points: **{amount:,.2f}**\n"
+            f"ROBUX: **{amount:,}**\n"
+            f"USD: **${usd:.2f}**\n\n"
+            f"Rate: **{amount:,} POINT = {amount:,} Robux Or ${usd:.2f}**"
+        )
+        embed = discord.Embed(title="💱 Price Conversion", description=description, color=0x00BFFF)
         await ctx.send(embed=embed)
     else:
         rows = [("1","R$1.00","$0.0037"),("100","R$100.00","$0.37"),("1,000","R$1,000","$3.70"),
