@@ -18,12 +18,14 @@ from images import (
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.invites = True
 
 bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 
-DB_FILE     = 'bot/user_data.json'
+DB_FILE      = 'bot/user_data.json'
 active_mines = {}
 active_bj    = {}
+invite_cache = {}   # guild_id -> {code: uses}
 
 POINTS_TO_USD = 0.0037
 
@@ -80,6 +82,7 @@ def get_user(user_id):
         ('last_daily', None), ('last_monthly', None), ('wager_at_last_monthly', 0),
         ('rakeback_available', 0.0), ('clan', None), ('bonus_received', 0),
         ('tips_sent', 0), ('tips_received', 0), ('total_withdrawn', 0),
+        ('daily_invites', 0), ('daily_invites_date', None), ('total_invites', 0),
     ]:
         if key not in u: u[key] = default; changed = True
     if 'total_lost' not in u.get('stats', {}):
@@ -573,8 +576,47 @@ class MinesView(discord.ui.View):
 
 @bot.event
 async def on_ready():
+    for guild in bot.guilds:
+        try:
+            invites = await guild.fetch_invites()
+            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+        except Exception:
+            pass
     print(f'{bot.user} has connected to Discord!')
     print('------')
+
+@bot.event
+async def on_invite_create(invite):
+    guild_id = invite.guild.id
+    if guild_id not in invite_cache:
+        invite_cache[guild_id] = {}
+    invite_cache[guild_id][invite.code] = invite.uses
+
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+    try:
+        new_invites = await guild.fetch_invites()
+    except Exception:
+        return
+    old = invite_cache.get(guild.id, {})
+    inviter_id = None
+    for inv in new_invites:
+        old_uses = old.get(inv.code, 0)
+        if inv.uses > old_uses:
+            inviter_id = inv.inviter.id if inv.inviter else None
+            break
+    invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
+    if not inviter_id:
+        return
+    today = datetime.now(timezone.utc).date().isoformat()
+    data, uid = get_user(inviter_id)
+    if data[uid].get('daily_invites_date') != today:
+        data[uid]['daily_invites'] = 0
+        data[uid]['daily_invites_date'] = today
+    data[uid]['daily_invites'] = data[uid].get('daily_invites', 0) + 1
+    data[uid]['total_invites']  = data[uid].get('total_invites', 0) + 1
+    save_data(data)
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
@@ -876,7 +918,18 @@ async def mines_cmd(ctx, amount: str, mine_count: int = 3):
 
 @bot.command(name='daily')
 async def daily(ctx):
-    data, uid = get_user(ctx.author.id); now = datetime.now(timezone.utc); last = data[uid].get('last_daily')
+    data, uid = get_user(ctx.author.id); now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+
+    # Reset daily invite count if it's a new day
+    if data[uid].get('daily_invites_date') != today:
+        data[uid]['daily_invites'] = 0
+        data[uid]['daily_invites_date'] = today
+
+    daily_invs = data[uid].get('daily_invites', 0)
+
+    # Check cooldown first
+    last = data[uid].get('last_daily')
     if last:
         last_dt = datetime.fromisoformat(last)
         if last_dt.tzinfo is None: last_dt = last_dt.replace(tzinfo=timezone.utc)
@@ -887,15 +940,56 @@ async def daily(ctx):
             embed = discord.Embed(title="🎁 Daily Reward",
                                   description=f"⏳ Come back in **{h}h {m}m**!", color=0xFF4444)
             await ctx.send(embed=embed); return
+
+    # Check invite requirement
+    REQUIRED_INVITES = 2
+    if daily_invs < REQUIRED_INVITES:
+        needed = REQUIRED_INVITES - daily_invs
+        embed = discord.Embed(
+            title="🎁 Daily Reward — Invite Required",
+            description=(
+                f"You need **{needed} more invite{'s' if needed > 1 else ''}** today to claim your daily reward!\n\n"
+                f"**Today's invites:** {daily_invs} / {REQUIRED_INVITES}\n\n"
+                f"Invite friends to the server and come back to claim!"
+            ),
+            color=0xFF8800
+        )
+        embed.set_footer(text="Invites reset every day at midnight UTC.")
+        save_data(data)
+        await ctx.send(embed=embed); return
+
     DAILY = 5
     data[uid]['last_daily']     = now.isoformat()
     data[uid]['balance']        = data[uid].get('balance', 0) + DAILY
     data[uid]['bonus_received'] = data[uid].get('bonus_received', 0) + DAILY
     save_data(data)
     embed = discord.Embed(title="🎁 Daily Reward Claimed!",
-                          description=f"Received **R${DAILY}**!\n**New Balance:** {fmt(data[uid]['balance'])}",
+                          description=(
+                              f"Received **R${DAILY}**!\n"
+                              f"**New Balance:** {fmt(data[uid]['balance'])}\n\n"
+                              f"✅ Today's invites: {daily_invs} / {REQUIRED_INVITES}"
+                          ),
                           color=0x00FF88)
     embed.set_footer(text="Come back in 24 hours!")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='invites')
+async def invites_cmd(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    data, uid = get_user(target.id)
+    today = datetime.now(timezone.utc).date().isoformat()
+    if data[uid].get('daily_invites_date') != today:
+        daily_invs = 0
+    else:
+        daily_invs = data[uid].get('daily_invites', 0)
+    total_invs = data[uid].get('total_invites', 0)
+    embed = discord.Embed(title=f"📨 {target.name}'s Invites", color=0x00BFFF)
+    embed.add_field(name="Today's Invites", value=f"**{daily_invs} / 2**", inline=True)
+    embed.add_field(name="Total Invites",   value=f"**{total_invs}**",     inline=True)
+    status = "✅ Can claim daily!" if daily_invs >= 2 else f"❌ Need {2 - daily_invs} more invite(s) today"
+    embed.add_field(name="Daily Status", value=status, inline=False)
+    embed.set_footer(text="Invite 2 people per day to unlock your .daily reward.")
     await ctx.send(embed=embed)
 
 

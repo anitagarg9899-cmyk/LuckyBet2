@@ -1,16 +1,16 @@
 {
     "1226180575598088345": {
-        "balance": 17163585790478,
+        "balance": 0,
         "stats": {
             "wins": 3,
-            "losses": 4,
-            "total_wagered": 27100,
-            "total_lost": 7000
+            "losses": 5,
+            "total_wagered": 17163585817578,
+            "total_lost": 17163585797478
         },
         "last_daily": "2026-06-09T10:40:48.848976+00:00",
         "last_monthly": "2026-06",
         "wager_at_last_monthly": 0,
-        "rakeback_available": 14.0,
+        "rakeback_available": 34327171594.956,
         "clan": "Owners",
         "bonus_received": 200003000,
         "tips_sent": 101302,
@@ -36,17 +36,17 @@
         "total_withdrawn": 10000
     },
     "1468419138341834897": {
-        "balance": 2,
+        "balance": 0,
         "stats": {
-            "wins": 0,
-            "losses": 0,
-            "total_wagered": 0,
-            "total_lost": 0
+            "wins": 2,
+            "losses": 3,
+            "total_wagered": 529,
+            "total_lost": 341
         },
         "last_daily": "2026-06-09T14:07:05.219177+00:00",
         "last_monthly": null,
         "wager_at_last_monthly": 0,
-        "rakeback_available": 0.0,
+        "rakeback_available": 0.6819999999999999,
         "clan": null,
         "bonus_received": 5,
         "tips_sent": 0,
