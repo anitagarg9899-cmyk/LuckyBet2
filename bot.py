@@ -90,6 +90,18 @@ def get_user(user_id):
 def get_user_balance(user_id):
     data, uid = get_user(user_id); return data[uid]['balance']
 
+def resolve_bet(amount_str, balance):
+    """Convert 'all', 'half', or a number string to an integer bet amount."""
+    s = str(amount_str).lower().strip()
+    if s == 'all':
+        return balance
+    if s == 'half':
+        return max(1, balance // 2)
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
 def set_user_balance(user_id, amount):
     data, uid = get_user(user_id)
     data[uid]['balance'] = max(0, amount); save_data(data)
@@ -315,8 +327,10 @@ async def run_crash_game(channel, guild_id):
 
 
 @bot.command(name='crash')
-async def crash_cmd(ctx, amount: int):
+async def crash_cmd(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
 
@@ -696,9 +710,11 @@ async def balance(ctx, member: discord.Member = None):
 
 
 @bot.command(name='coinflip', aliases=['cf'])
-async def coinflip(ctx, amount: int, choice: str):
+async def coinflip(ctx, amount: str, choice: str):
     bal = get_user_balance(ctx.author.id); choice = choice.lower()
     if choice not in ['heads','tails','h','t']: await ctx.send("❌ Choose **heads** or **tails** (or h/t)"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     choice = 'heads' if choice == 'h' else ('tails' if choice == 't' else choice)
@@ -723,9 +739,11 @@ async def coinflip(ctx, amount: int, choice: str):
 
 
 @bot.command(name='dice')
-async def dice(ctx, amount: int, guess: int):
+async def dice(ctx, amount: str, guess: int):
     bal = get_user_balance(ctx.author.id)
     if guess < 1 or guess > 6: await ctx.send("❌ Guess a number 1–6!"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     faces = ["⚀","⚁","⚂","⚃","⚄","⚅"]
@@ -749,8 +767,10 @@ async def dice(ctx, amount: int, guess: int):
 
 
 @bot.command(name='slots')
-async def slots(ctx, amount: int):
+async def slots(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     SPIN = "🌀"; GEM = "💎"; symbols = ["🍎","🍊","🍋","🍌","⭐",GEM]
@@ -780,9 +800,11 @@ async def slots(ctx, amount: int):
 
 
 @bot.command(name='roulette')
-async def roulette(ctx, amount: int, choice: str):
+async def roulette(ctx, amount: str, choice: str):
     bal = get_user_balance(ctx.author.id); choice = choice.lower()
     if choice not in ['red','black','even','odd']: await ctx.send("❌ Choose: `red` `black` `even` `odd`"); return
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     frames = ["🔴 🔵 🟢 🔴 ⚪","⚪ 🔴 🔵 🟢 🔴","🔴 ⚪ 🔴 🔵 🟢","🟢 🔴 ⚪ 🔴 🔵"]
@@ -809,8 +831,10 @@ async def roulette(ctx, amount: int, choice: str):
 
 
 @bot.command(name='blackjack', aliases=['bj'])
-async def blackjack_cmd(ctx, amount: int):
+async def blackjack_cmd(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     if ctx.author.id in active_bj: await ctx.send("❌ You already have an active blackjack game!"); return
@@ -833,8 +857,10 @@ async def blackjack_cmd(ctx, amount: int):
 
 
 @bot.command(name='mines')
-async def mines_cmd(ctx, amount: int, mine_count: int = 3):
+async def mines_cmd(ctx, amount: str, mine_count: int = 3):
     bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     if mine_count < 1 or mine_count > 15: await ctx.send("❌ Mine count must be 1–15!"); return
@@ -971,8 +997,10 @@ class RainView(discord.ui.View):
 
 
 @bot.command(name='rain')
-async def rain(ctx, amount: int):
+async def rain(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Amount must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
 
