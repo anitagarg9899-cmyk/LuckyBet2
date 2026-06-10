@@ -1196,16 +1196,79 @@ async def price(ctx, amount: int = None):
         await ctx.send(embed=embed)
 
 
-@bot.command(name='thread')
+@bot.group(name='thread', invoke_without_command=True)
 async def thread_cmd(ctx):
+    embed = discord.Embed(title="💬 Thread Commands", color=0x00BFFF, description=(
+        "`.thread create` — Create a private thread\n"
+        "`.thread close` — Close (archive) the current thread\n"
+        "`.thread add @user` — Add a user to the current thread\n"
+        "`.thread remove @user` — Remove a user from the current thread"
+    ))
+    await ctx.send(embed=embed)
+
+@thread_cmd.command(name='create')
+async def thread_create(ctx):
     try:
-        thread = await ctx.channel.create_thread(name=f"{ctx.author.name}'s Thread",
-                                                  type=discord.ChannelType.private_thread, auto_archive_duration=1440)
+        thread = await ctx.channel.create_thread(
+            name=f"{ctx.author.name}'s Thread",
+            type=discord.ChannelType.private_thread,
+            auto_archive_duration=1440
+        )
+        await thread.add_user(ctx.author)
         await thread.send(f"Welcome {ctx.author.mention}! 👋 This is your private thread.")
-        embed = discord.Embed(title="💬 Private Thread Created", description=f"Your thread: {thread.mention}", color=0x00BFFF)
+        embed = discord.Embed(title="💬 Thread Created", description=f"Your thread: {thread.mention}", color=0x00FF99)
         await ctx.send(embed=embed)
-    except discord.Forbidden: await ctx.send("❌ I don't have permission to create private threads!")
-    except Exception as e:    await ctx.send(f"❌ Could not create thread: {e}")
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to create private threads!")
+    except Exception as e:
+        await ctx.send(f"❌ Could not create thread: {e}")
+
+@thread_cmd.command(name='close')
+async def thread_close(ctx):
+    if not isinstance(ctx.channel, discord.Thread):
+        await ctx.send("❌ This command can only be used inside a thread!")
+        return
+    try:
+        await ctx.send("🔒 Thread closed.")
+        await ctx.channel.edit(archived=True, locked=True)
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to close this thread!")
+    except Exception as e:
+        await ctx.send(f"❌ Could not close thread: {e}")
+
+@thread_cmd.command(name='add')
+async def thread_add(ctx, member: discord.Member = None):
+    if not isinstance(ctx.channel, discord.Thread):
+        await ctx.send("❌ This command can only be used inside a thread!")
+        return
+    if member is None:
+        await ctx.send("❌ Please mention a user. Usage: `.thread add @user`")
+        return
+    try:
+        await ctx.channel.add_user(member)
+        embed = discord.Embed(title="💬 User Added", description=f"{member.mention} has been added to the thread.", color=0x00FF99)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to add users to this thread!")
+    except Exception as e:
+        await ctx.send(f"❌ Could not add user: {e}")
+
+@thread_cmd.command(name='remove')
+async def thread_remove(ctx, member: discord.Member = None):
+    if not isinstance(ctx.channel, discord.Thread):
+        await ctx.send("❌ This command can only be used inside a thread!")
+        return
+    if member is None:
+        await ctx.send("❌ Please mention a user. Usage: `.thread remove @user`")
+        return
+    try:
+        await ctx.channel.remove_user(member)
+        embed = discord.Embed(title="💬 User Removed", description=f"{member.mention} has been removed from the thread.", color=0xFF4444)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to remove users from this thread!")
+    except Exception as e:
+        await ctx.send(f"❌ Could not remove user: {e}")
 
 # ── General ───────────────────────────────────────────────────────────────────
 
