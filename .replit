@@ -28,3 +28,8 @@ args = "python bot.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[deployment]
+deploymentTarget = "vm"
+publicDir = "public/   index.html"
+run = ["python", "bot.py"]

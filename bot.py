@@ -175,6 +175,49 @@ def pf_mine_positions(server_seed, client_seed, mines_count, total=20):
         positions[i], positions[j] = positions[j], positions[i]
     return set(positions[:mines_count])
 
+def pf_derive(server_seed, client_seed, nonce=0):
+    """Return a float [0, 1) derived from seeds + nonce via HMAC-SHA256."""
+    msg = f"{client_seed}:{nonce}".encode()
+    h = hmac.new(server_seed.encode(), msg, hashlib.sha256)
+    return int(h.hexdigest()[:8], 16) / 0xFFFFFFFF
+
+def pf_coinflip(server_seed, client_seed):
+    return "heads" if pf_derive(server_seed, client_seed) < 0.5 else "tails"
+
+def pf_dice_roll(server_seed, client_seed):
+    return int(pf_derive(server_seed, client_seed) * 6) + 1
+
+def pf_roulette_spin(server_seed, client_seed):
+    return int(pf_derive(server_seed, client_seed) * 37)
+
+def pf_slots_spin(server_seed, client_seed):
+    symbols = ["🍎", "🍊", "🍋", "🍌", "⭐", "💎"]
+    return [symbols[int(pf_derive(server_seed, client_seed, i) * 6)] for i in range(3)]
+
+def pf_blackjack_deck(server_seed, client_seed):
+    deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4
+    full_bytes = b''
+    for i in range(12):
+        msg = f"{client_seed}:{i}".encode()
+        full_bytes += bytes.fromhex(hmac.new(server_seed.encode(), msg, hashlib.sha256).hexdigest())
+    for i in range(len(deck) - 1, 0, -1):
+        j = full_bytes[i % len(full_bytes)] % (i + 1)
+        deck[i], deck[j] = deck[j], deck[i]
+    return deck
+
+def pf_add_field(embed, server_seed, client_seed, public_hash, game):
+    """Append a Provably Fair verification field to an embed."""
+    embed.add_field(
+        name="🔐 Provably Fair",
+        value=(
+            f"**Server Seed:** `{server_seed}`\n"
+            f"**Client Seed:** `{client_seed}`\n"
+            f"**Hash (SHA-256):** `{public_hash[:24]}…`\n"
+            f"Verify: `.verify {game} {server_seed} {client_seed}`"
+        ),
+        inline=False
+    )
+
 # ── Crash Game ────────────────────────────────────────────────────────────────
 
 CRASH_LOBBY_SECS = 20
@@ -760,13 +803,14 @@ async def coinflip(ctx, amount: str, choice: str):
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     choice = 'heads' if choice == 'h' else ('tails' if choice == 't' else choice)
+    server_seed, client_seed, public_hash = generate_seeds()
     frames = ["🌀 Flipping...","🪙 Spinning...","✨ Almost...","🎯 Result..."]
     embed = discord.Embed(title="🪙  Coin Flip", description=frames[0], color=0xFFD700)
     msg = await ctx.send(embed=embed)
     for frame in frames[1:]:
         await asyncio.sleep(0.45); embed.description = frame; await msg.edit(embed=embed)
     await asyncio.sleep(0.35)
-    result = random.choice(['heads','tails']); won = choice == result
+    result = pf_coinflip(server_seed, client_seed); won = choice == result
     new_bal = bal + amount if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
@@ -775,6 +819,7 @@ async def coinflip(ctx, amount: str, choice: str):
     embed.add_field(name="Result",    value=result.upper(), inline=True)
     embed.add_field(name="Change",    value=f"{'+'if won else '-'}R${amount:,}", inline=True)
     embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "coinflip")
     img_buf = coinflip_card(ctx.author.name, choice, result, won)
     embed.set_image(url="attachment://coinflip.png")
     await msg.edit(embed=embed, attachments=[send_image(img_buf, 'coinflip.png')])
@@ -788,13 +833,14 @@ async def dice(ctx, amount: str, guess: int):
     if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
     faces = ["⚀","⚁","⚂","⚃","⚄","⚅"]
     embed = discord.Embed(title="🎲  Dice Roll", description="🎲 Rolling...", color=0xFFD700)
     msg = await ctx.send(embed=embed)
     for _ in range(4):
         await asyncio.sleep(0.4); embed.description = f"🎲 {faces[random.randint(0,5)]}  Rolling..."; await msg.edit(embed=embed)
     await asyncio.sleep(0.3)
-    roll = random.randint(1, 6); won = guess == roll
+    roll = pf_dice_roll(server_seed, client_seed); won = guess == roll
     new_bal = (bal + amount * 5) if won else (bal - amount)
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
@@ -803,6 +849,7 @@ async def dice(ctx, amount: str, guess: int):
     embed.add_field(name="Rolled",     value=f"{roll} {faces[roll-1]}",   inline=True)
     embed.add_field(name="Change",     value=f"{'+'if won else '-'}R${amount*(5 if won else 1):,}", inline=True)
     embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "dice")
     img_buf = dice_card(ctx.author.name, guess, roll, won)
     embed.set_image(url="attachment://dice.png")
     await msg.edit(embed=embed, attachments=[send_image(img_buf, 'dice.png')])
@@ -815,8 +862,9 @@ async def slots(ctx, amount: str):
     if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
-    SPIN = "🌀"; GEM = "💎"; symbols = ["🍎","🍊","🍋","🍌","⭐",GEM]
-    final = [random.choice(symbols) for _ in range(3)]
+    server_seed, client_seed, public_hash = generate_seeds()
+    SPIN = "🌀"; GEM = "💎"
+    final = pf_slots_spin(server_seed, client_seed)
     def disp(r1,r2,r3): return f"┌─────────────┐\n│  {r1}  {r2}  {r3}  │\n└─────────────┘"
     embed = discord.Embed(title="🎰  Slot Machine", color=0xFFD700)
     embed.description = f"```\n{disp(SPIN,SPIN,SPIN)}\n```\nSpinning..."
@@ -836,6 +884,7 @@ async def slots(ctx, amount: str):
     embed.description = f"```\n{disp(r1,r2,r3)}\n```"
     embed.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
     embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "slots")
     img_buf = slots_card(ctx.author.name, final, won, label)
     embed.set_image(url="attachment://slots.png")
     await msg.edit(embed=embed, attachments=[send_image(img_buf, 'slots.png')])
@@ -849,13 +898,14 @@ async def roulette(ctx, amount: str, choice: str):
     if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+    server_seed, client_seed, public_hash = generate_seeds()
     frames = ["🔴 🔵 🟢 🔴 ⚪","⚪ 🔴 🔵 🟢 🔴","🔴 ⚪ 🔴 🔵 🟢","🟢 🔴 ⚪ 🔴 🔵"]
     embed = discord.Embed(title="🎡  Roulette", description=f"Spinning...\n{frames[0]}", color=0xFFD700)
     msg = await ctx.send(embed=embed)
     for frame in frames[1:]:
         await asyncio.sleep(0.45); embed.description = f"Spinning...\n{frame}"; await msg.edit(embed=embed)
     await asyncio.sleep(0.4)
-    spin = random.randint(0, 36)
+    spin = pf_roulette_spin(server_seed, client_seed)
     if spin == 0: rc = "green"; parity = "—"; won = False
     else: rc = "red" if spin%2==1 else "black"; parity = "even" if spin%2==0 else "odd"; won = choice==rc or choice==parity
     new_bal = bal + amount if won else bal - amount
@@ -867,6 +917,7 @@ async def roulette(ctx, amount: str, choice: str):
     embed.add_field(name="You bet", value=choice.upper(), inline=True)
     embed.add_field(name="Change",  value=f"{'+'if won else '-'}R${amount:,}", inline=True)
     embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "roulette")
     img_buf = roulette_card(ctx.author.name, choice, spin, rc, won)
     embed.set_image(url="attachment://roulette.png")
     await msg.edit(embed=embed, attachments=[send_image(img_buf, 'roulette.png')])
@@ -880,7 +931,8 @@ async def blackjack_cmd(ctx, amount: str):
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     if ctx.author.id in active_bj: await ctx.send("❌ You already have an active blackjack game!"); return
-    deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4; random.shuffle(deck)
+    server_seed, client_seed, public_hash = generate_seeds()
+    deck = pf_blackjack_deck(server_seed, client_seed)
     pc = [deck.pop(), deck.pop()]; dc = [deck.pop(), deck.pop()]; pv = cv(pc)
     if pv == 21:
         winnings = round(amount * 2.5); new_bal = bal + winnings - amount
@@ -890,11 +942,12 @@ async def blackjack_cmd(ctx, amount: str):
         embed.add_field(name="Your hand", value=f"{cs(pc)} ({pv})", inline=False)
         embed.add_field(name="Won", value=fmt(winnings), inline=True)
         embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
+        pf_add_field(embed, server_seed, client_seed, public_hash, "blackjack")
         await ctx.send(embed=embed); return
     active_bj[ctx.author.id] = True
     view = BlackjackView(ctx.author.id, amount, bal, pc, dc, deck)
     embed = bj_embed(pc, dc, amount)
-    embed.set_footer(text="👊 Hit  |  🛑 Stand  |  ⬆️ Double Down (first action only)")
+    embed.set_footer(text=f"👊 Hit  |  🛑 Stand  |  ⬆️ Double Down  |  🔐 Seed: {client_seed[:8]}… Hash: {public_hash[:12]}…")
     await ctx.send(embed=embed, view=view)
 
 
@@ -913,6 +966,56 @@ async def mines_cmd(ctx, amount: str, mine_count: int = 3):
     view = MinesView(ctx.author.id, amount, mine_count, mine_positions, server_seed, client_seed, public_hash)
     embed = make_mines_embed(amount, mine_count, 0, client_seed, public_hash)
     await ctx.send(embed=embed, view=view)
+
+@bot.command(name='verify')
+async def verify(ctx, game: str = None, server_seed: str = None, client_seed: str = None, extra: str = None):
+    if not game or not server_seed or not client_seed:
+        embed = discord.Embed(title="🔐 Provably Fair — Verify", color=0x00BFFF, description=(
+            "Verify any game result using its seeds.\n\n"
+            "**Usage:**\n"
+            "`.verify coinflip <server_seed> <client_seed>`\n"
+            "`.verify dice <server_seed> <client_seed>`\n"
+            "`.verify slots <server_seed> <client_seed>`\n"
+            "`.verify roulette <server_seed> <client_seed>`\n"
+            "`.verify mines <server_seed> <client_seed> <mine_count>`\n\n"
+            "The **Server Seed** and **Client Seed** are shown at the bottom of every game result."
+        ))
+        await ctx.send(embed=embed); return
+
+    game = game.lower()
+    computed_hash = hashlib.sha256(server_seed.encode()).hexdigest()
+
+    embed = discord.Embed(title=f"🔐 Verify — {game.title()}", color=0x00BFFF)
+    embed.add_field(name="Server Seed",   value=f"`{server_seed}`",    inline=False)
+    embed.add_field(name="Client Seed",   value=f"`{client_seed}`",    inline=False)
+    embed.add_field(name="Hash (SHA-256)", value=f"`{computed_hash}`", inline=False)
+
+    if game == "coinflip":
+        result = pf_coinflip(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result.upper()}**", inline=False)
+    elif game == "dice":
+        result = pf_dice_roll(server_seed, client_seed)
+        faces = ["⚀","⚁","⚂","⚃","⚄","⚅"]
+        embed.add_field(name="✅ Result", value=f"**{result}** {faces[result-1]}", inline=False)
+    elif game == "slots":
+        result = pf_slots_spin(server_seed, client_seed)
+        embed.add_field(name="✅ Result", value=f"**{result[0]}  {result[1]}  {result[2]}**", inline=False)
+    elif game == "roulette":
+        spin = pf_roulette_spin(server_seed, client_seed)
+        if spin == 0: rc = "green"; parity = "—"
+        else: rc = "red" if spin%2==1 else "black"; parity = "even" if spin%2==0 else "odd"
+        ci = "🔴" if rc=="red" else ("⚫" if rc=="black" else "🟢")
+        embed.add_field(name="✅ Result", value=f"{ci} **{spin}** ({rc} / {parity})", inline=False)
+    elif game in ("mines", "mine"):
+        mine_count = int(extra) if extra and extra.isdigit() else 3
+        positions = pf_mine_positions(server_seed, client_seed, mine_count)
+        embed.add_field(name="✅ Mine Positions (0-indexed)", value=f"`{sorted(positions)}`", inline=False)
+    else:
+        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `mines`", inline=False)
+
+    embed.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
+    await ctx.send(embed=embed)
+
 
 # ── Rewards ───────────────────────────────────────────────────────────────────
 

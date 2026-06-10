@@ -15,7 +15,10 @@
         "bonus_received": 200003000,
         "tips_sent": 101302,
         "tips_received": 0,
-        "total_withdrawn": 0
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-10",
+        "total_invites": 0
     },
     "1465814583036874855": {
         "balance": 0,
