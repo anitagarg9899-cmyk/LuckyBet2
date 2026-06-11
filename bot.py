@@ -1010,8 +1010,15 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
         mine_count = int(extra) if extra and extra.isdigit() else 3
         positions = pf_mine_positions(server_seed, client_seed, mine_count)
         embed.add_field(name="✅ Mine Positions (0-indexed)", value=f"`{sorted(positions)}`", inline=False)
+    elif game in ("jackpot", "jp"):
+        fail_val = pf_derive(server_seed, client_seed, nonce=0)
+        draw_val = pf_derive(server_seed, client_seed, nonce=1)
+        failed   = fail_val < JACKPOT_FAIL_ODDS
+        embed.add_field(name="Fail roll (nonce 0)",  value=f"`{fail_val:.6f}` — threshold `{JACKPOT_FAIL_ODDS}` → {'**FAILED**' if failed else 'Passed ✅'}", inline=False)
+        embed.add_field(name="Draw roll (nonce 1)",  value=f"`{draw_val:.6f}` — used for weighted winner selection", inline=False)
+        embed.add_field(name="✅ Outcome", value="**POT FAILED** (no winner)" if failed else f"Winner determined by draw roll `{draw_val:.6f}` against entry weights", inline=False)
     else:
-        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `mines`", inline=False)
+        embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `mines`, `jackpot`", inline=False)
 
     embed.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
     await ctx.send(embed=embed)
@@ -1496,6 +1503,236 @@ async def thread_remove(ctx, member: discord.Member = None):
     except Exception as e:
         await ctx.send(f"❌ Could not remove user: {e}")
 
+# ── Jackpot ───────────────────────────────────────────────────────────────────
+
+JACKPOT_DURATION    = 60    # seconds the round stays open
+JACKPOT_MIN_BET     = 10    # minimum contribution per entry
+JACKPOT_FAIL_ODDS   = 0.12  # 12 % chance nobody wins (provably fair)
+JACKPOT_HOUSE_EDGE  = 0.08  # 8 % taken from the pot on a win
+JACKPOT_MIN_PLAYERS = 2     # minimum distinct players needed to draw
+
+jackpot_state = {
+    'active':      False,
+    'entries':     {},        # uid(int) -> {'name': str, 'amount': int}
+    'total':       0,
+    'channel_id':  None,
+    'msg_id':      None,
+    'task':        None,
+    'server_seed': None,
+    'client_seed': None,
+    'public_hash': None,
+    'ends_at':     None,
+}
+
+
+def _jackpot_embed_live():
+    state  = jackpot_state
+    now    = datetime.now(timezone.utc)
+    secs   = max(0, int((state['ends_at'] - now).total_seconds())) if state['ends_at'] else 0
+    total  = state['total']
+    embed  = discord.Embed(
+        title="🎰  Jackpot — Round Open!",
+        description=(
+            f"⏳ Drawing in **{secs}s**\n"
+            f"💰 Total Pot: **R${total:,}**\n"
+            f"👥 Players: **{len(state['entries'])}**\n\n"
+            f"🔐 Pre-draw Hash: `{state['public_hash'][:20]}…`"
+        ),
+        color=0xFFD700,
+    )
+    if state['entries']:
+        lines = []
+        for uid, e in sorted(state['entries'].items(), key=lambda x: x[1]['amount'], reverse=True):
+            pct = e['amount'] / total * 100 if total else 0
+            lines.append(f"**{e['name']}** — R${e['amount']:,} ({pct:.1f}% chance)")
+        embed.add_field(name="🎟️ Entries", value="\n".join(lines[:15]), inline=False)
+    embed.set_footer(text=f"Min: R${JACKPOT_MIN_BET:,}  |  Fail chance: {int(JACKPOT_FAIL_ODDS*100)}%  |  House edge: {int(JACKPOT_HOUSE_EDGE*100)}%")
+    return embed
+
+
+async def _run_jackpot_draw():
+    await asyncio.sleep(JACKPOT_DURATION)
+
+    state       = jackpot_state
+    channel     = bot.get_channel(state['channel_id'])
+    entries     = dict(state['entries'])
+    total       = state['total']
+    server_seed = state['server_seed']
+    client_seed = state['client_seed']
+    public_hash = state['public_hash']
+
+    # Fetch the live message before resetting state
+    live_msg = None
+    if channel and state['msg_id']:
+        try: live_msg = await channel.fetch_message(state['msg_id'])
+        except: pass
+
+    # Reset state so a new round can start immediately
+    jackpot_state.update(active=False, entries={}, total=0, channel_id=None,
+                         msg_id=None, task=None, ends_at=None,
+                         server_seed=None, client_seed=None, public_hash=None)
+
+    if not channel:
+        return
+
+    # ── Not enough players: refund everyone ──────────────────────────────────
+    if len(entries) < JACKPOT_MIN_PLAYERS:
+        for uid, e in entries.items():
+            set_user_balance(uid, get_user_balance(uid) + e['amount'])
+        embed = discord.Embed(
+            title="❌  Jackpot — Cancelled",
+            description=(
+                f"Only **{len(entries)}** player(s) joined "
+                f"({JACKPOT_MIN_PLAYERS} required).\n"
+                f"💸 All bets have been **refunded**."
+            ),
+            color=0xFF4444,
+        )
+        pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
+        if live_msg: await live_msg.edit(embed=embed)
+        else: await channel.send(embed=embed)
+        return
+
+    # ── Fail check (nonce 0) ─────────────────────────────────────────────────
+    fail_val = pf_derive(server_seed, client_seed, nonce=0)
+    if fail_val < JACKPOT_FAIL_ODDS:
+        embed = discord.Embed(
+            title="💥  Jackpot — FAILED!",
+            description=(
+                f"The jackpot has **failed** and nobody wins!\n"
+                f"💀 **R${total:,}** has been swallowed by the house.\n\n"
+                f"*(Fail roll: `{fail_val:.4f}` < `{JACKPOT_FAIL_ODDS}` threshold)*"
+            ),
+            color=0xFF0000,
+        )
+        pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
+        if live_msg: await live_msg.edit(embed=embed)
+        else: await channel.send(embed=embed)
+        return
+
+    # ── Weighted draw (nonce 1) ───────────────────────────────────────────────
+    draw_val   = pf_derive(server_seed, client_seed, nonce=1)
+    cursor     = 0.0
+    winner_uid = None
+    uid_list   = list(entries.keys())
+    for uid in uid_list:
+        cursor += entries[uid]['amount'] / total
+        if draw_val <= cursor:
+            winner_uid = uid
+            break
+    if winner_uid is None:
+        winner_uid = uid_list[-1]
+
+    winnings    = int(total * (1 - JACKPOT_HOUSE_EDGE))
+    new_bal     = get_user_balance(winner_uid) + winnings
+    set_user_balance(winner_uid, new_bal)
+    add_to_stats(winner_uid, True, 0)
+
+    winner_name         = entries[winner_uid]['name']
+    winner_contribution = entries[winner_uid]['amount']
+    winner_pct          = winner_contribution / total * 100
+
+    try: winner_user = await bot.fetch_user(winner_uid)
+    except: winner_user = None
+
+    embed = discord.Embed(title="🎉  Jackpot — WINNER!", color=0x00FF88)
+    embed.description = (
+        f"🏆 **{winner_name}** wins **R${winnings:,}**!\n"
+        f"🎟️ Had a **{winner_pct:.1f}%** chance "
+        f"(contributed R${winner_contribution:,} of R${total:,})\n"
+        f"🏦 New balance: **{fmt(new_bal)}**\n\n"
+        f"*(Draw roll: `{draw_val:.4f}`)*"
+    )
+    if winner_user:
+        embed.set_thumbnail(url=winner_user.display_avatar.url)
+
+    lines = []
+    for uid, e in sorted(entries.items(), key=lambda x: x[1]['amount'], reverse=True):
+        pct    = e['amount'] / total * 100
+        marker = "👑" if uid == winner_uid else "❌"
+        lines.append(f"{marker} **{e['name']}** — R${e['amount']:,} ({pct:.1f}%)")
+    embed.add_field(name="🎟️ All Entries", value="\n".join(lines[:15]), inline=False)
+    pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
+
+    if live_msg: await live_msg.edit(embed=embed)
+    else: await channel.send(embed=embed)
+
+    if channel:
+        await channel.send(f"🎉 Congratulations <@{winner_uid}>! You won **R${winnings:,}**!")
+
+
+@bot.command(name='jackpot', aliases=['jp'])
+async def jackpot_cmd(ctx, amount: str = None):
+    state = jackpot_state
+
+    # ── No argument: show status ──────────────────────────────────────────────
+    if amount is None:
+        if not state['active']:
+            embed = discord.Embed(
+                title="🎰  Jackpot",
+                description=(
+                    "No jackpot is currently running.\n\n"
+                    f"Start one with `.jackpot <amount>`!\n\n"
+                    f"• Min entry: **R${JACKPOT_MIN_BET:,}**\n"
+                    f"• Round lasts **{JACKPOT_DURATION}s** after the first entry\n"
+                    f"• Contribution = your win chance (more = better)\n"
+                    f"• **{int(JACKPOT_FAIL_ODDS*100)}%** chance the pot **fails** and nobody wins\n"
+                    f"• **{int(JACKPOT_HOUSE_EDGE*100)}%** house edge deducted from the prize"
+                ),
+                color=0x9B59B6,
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=_jackpot_embed_live())
+        return
+
+    # ── Joining / starting a round ────────────────────────────────────────────
+    bal = get_user_balance(ctx.author.id)
+    amt = resolve_bet(amount, bal)
+    if amt is None:
+        await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amt < JACKPOT_MIN_BET:
+        await ctx.send(f"❌ Minimum jackpot entry is **R${JACKPOT_MIN_BET:,}**!"); return
+    if amt > bal:
+        await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+
+    uid = ctx.author.id
+
+    if state['active'] and uid in state['entries']:
+        await ctx.send(f"❌ You already entered this round (R${state['entries'][uid]['amount']:,} in)!"); return
+
+    # Deduct immediately
+    set_user_balance(uid, bal - amt)
+
+    if not state['active']:
+        server_seed, client_seed, public_hash = generate_seeds()
+        jackpot_state.update(
+            active=True, entries={}, total=0,
+            server_seed=server_seed, client_seed=client_seed, public_hash=public_hash,
+            channel_id=ctx.channel.id, msg_id=None,
+            ends_at=datetime.now(timezone.utc) + timedelta(seconds=JACKPOT_DURATION),
+        )
+
+    state['entries'][uid] = {'name': ctx.author.name, 'amount': amt}
+    state['total']       += amt
+
+    embed = _jackpot_embed_live()
+
+    if state['msg_id'] is None:
+        msg = await ctx.send(embed=embed)
+        state['msg_id'] = msg.id
+        state['task']   = asyncio.create_task(_run_jackpot_draw())
+    else:
+        try:
+            ch  = bot.get_channel(state['channel_id'])
+            lm  = await ch.fetch_message(state['msg_id'])
+            await lm.edit(embed=embed)
+            await ctx.message.add_reaction("✅")
+        except:
+            msg = await ctx.send(embed=embed)
+            state['msg_id'] = msg.id
+
+
 # ── General ───────────────────────────────────────────────────────────────────
 
 @bot.command(name='leaderboard', aliases=['lb'])
@@ -1564,7 +1801,8 @@ async def help_command(ctx):
         "`.roulette <amt> <r/b/e/o>` — Roulette ×2\n"
         "`.blackjack` / `.bj <amt>` — Hit, Stand, Double\n"
         "`.mines <amt> [mines]` — Provably fair mines\n"
-        "`.crash <amt>` — Multiplayer crash game"
+        "`.crash <amt>` — Multiplayer crash game\n"
+        "`.jackpot` / `.jp <amt>` — Weighted jackpot pool"
     ), inline=False)
     embed.add_field(name="🎁 Rewards", value=(
         "`.daily` — 5 pts free (24h cooldown)\n"

@@ -72,7 +72,10 @@
         "bonus_received": 7,
         "tips_sent": 0,
         "tips_received": 101200,
-        "total_withdrawn": 0
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-10",
+        "total_invites": 0
     },
     "config": {
         "rank_roles": {
